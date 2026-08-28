@@ -484,9 +484,18 @@ private:
 		std::string reason;
 		uint32_t    bad_dword = 0;
 		if (!ValidateSource(descriptor, reason, bad_dword)) {
-			return Fail(
-			    pc, error,
-			    fmt::format("{} dword {} {}", ValueOpcodeName(expected), bad_dword, reason));
+			const bool control_dependent =
+			    reason.find("control-dependent") != std::string::npos ||
+			    reason.find("runtime-dependent") != std::string::npos;
+			const bool image_or_sampler = expected == ValueOpcode::GetImageResource ||
+			                              expected == ValueOpcode::GetSamplerResource;
+			if (!control_dependent || !image_or_sampler) {
+				return Fail(
+				    pc, error,
+				    fmt::format("{} dword {} {}", ValueOpcodeName(expected), bad_dword, reason));
+			}
+			descriptor.dwords.fill(Value(0u));
+			descriptor.indirect_image.reset();
 		}
 		source = InternSource(descriptor);
 		return true;
