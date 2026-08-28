@@ -546,15 +546,17 @@ private:
 	}
 
 	uint32_t AddImage(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
-		const auto mip   = MipMode(memory);
-		const bool depth = (memory.image_sample_flags & Decoder::ImageSampleFlagCompare) != 0;
+		const auto mip    = MipMode(memory);
+		const bool depth  = (memory.image_sample_flags & Decoder::ImageSampleFlagCompare) != 0;
+		const bool gather = op == ValueOpcode::ImageGatherRaw;
 		for (uint32_t i = 0; i < m_info.images.size(); i++) {
 			auto& image = m_info.images[i];
 			const bool compatible_kind = image.kind == memory.kind || (IsStorageImage(image.kind) &&
 			                                                           IsStorageImage(memory.kind));
 			if (image.source == source && compatible_kind &&
 			    image.dimension == memory.image_dimension && image.mip_mode == mip &&
-			    image.depth_compare == depth && image.r128 == memory.image_r128) {
+			    image.depth_compare == depth && image.r128 == memory.image_r128 &&
+			    image.gather == gather) {
 				if (memory.kind == ResourceKind::StorageImageUint) {
 					image.kind = ResourceKind::StorageImageUint;
 				}
@@ -573,6 +575,7 @@ private:
 		image.mip_mode      = mip;
 		image.depth_compare = depth;
 		image.r128          = memory.image_r128;
+		image.gather        = gather;
 		Merge(image, op, pc);
 		m_info.images.push_back(image);
 		return static_cast<uint32_t>(m_info.images.size() - 1);
