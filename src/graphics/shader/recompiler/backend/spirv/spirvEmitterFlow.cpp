@@ -61,6 +61,32 @@ uint32_t EmitBuiltinU32(ValueEmitContext& ctx, IR::StageInputKind kind, uint32_t
 	if (kind == IR::StageInputKind::LocalInvocationIndex) {
 		return EmitLocalInvocationIndex(state);
 	}
+	if (state.remap_local_x != 0 && (kind == IR::StageInputKind::LocalInvocationId ||
+	                                 kind == IR::StageInputKind::GlobalInvocationId)) {
+		const uint32_t sizes[3]  = {state.remap_local_x, state.remap_local_y, state.remap_local_z};
+		const uint32_t axis      = component & 3u;
+		const uint32_t stride    = axis == 0u ? 1u : (axis == 1u ? sizes[0] : sizes[0] * sizes[1]);
+		const auto     index     = EmitLocalInvocationIndex(state);
+		const auto     divided   = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpUDiv, TypeU32(state), divided, index, ConstantU32(state, stride)});
+		auto local = divided;
+		if (axis != 2u) {
+			local = state.builder.AllocateId();
+			state.builder.AddFunction(
+			    {OpUMod, TypeU32(state), local, divided, ConstantU32(state, sizes[axis])});
+		}
+		if (kind == IR::StageInputKind::LocalInvocationId) {
+			return local;
+		}
+		const auto group  = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, axis);
+		const auto scaled = state.builder.AllocateId();
+		state.builder.AddFunction(
+		    {OpIMul, TypeU32(state), scaled, group, ConstantU32(state, sizes[axis])});
+		const auto global = state.builder.AllocateId();
+		state.builder.AddFunction({OpIAdd, TypeU32(state), global, scaled, local});
+		return global;
+	}
 	const auto variable = InputVariableForKind(state, kind);
 	if (variable == 0) {
 		return ConstantU32(state, 0);
