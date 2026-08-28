@@ -197,6 +197,7 @@ enum : uint32_t {
 	OpFMul                         = 133,
 	OpUDiv                         = 134,
 	OpFDiv                         = 136,
+	OpUMod                         = 137,
 	OpIAddCarry                    = 149,
 	OpUMulExtended                 = 151,
 	OpSMulExtended                 = 152,
@@ -388,6 +389,9 @@ struct EmitterState {
 	uint32_t                   cull_distance_count                   = 0;
 	uint32_t                   depth_variable                        = 0;
 	uint32_t                   sample_mask_variable                  = 0;
+	uint32_t                   remap_local_x                         = 0;
+	uint32_t                   remap_local_y                         = 0;
+	uint32_t                   remap_local_z                         = 0;
 	std::vector<InputBinding>  inputs;
 	std::vector<OutputBinding> outputs;
 	std::vector<uint32_t>      interface_variables;

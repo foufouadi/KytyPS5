@@ -91,6 +91,8 @@ struct ShaderVertexInputInfo {
 struct ShaderComputeInputInfo {
 	uint32_t           threads_num[3]             = {0, 0, 0};
 	uint32_t           dispatch_threads_num[3]    = {0, 0, 0};
+	uint32_t           host_workgroup_size[3]      = {1024, 1024, 64};
+	uint32_t           host_workgroup_invocations = 1024;
 	uint32_t           lds_size_dwords            = 0;
 	uint32_t           scratch_size_dwords        = 0;
 	bool               group_id[3]                = {false, false, false};

@@ -801,9 +801,17 @@ static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
 	                                   ShaderComputeInputInfo& info) {
 	const bool dispatch_thread_dimensions = info.dispatch_thread_dimensions;
 	const bool needs_lds_barriers          = info.needs_lds_barriers;
+	uint32_t   host_workgroup_size[3]      = {info.host_workgroup_size[0],
+	                                           info.host_workgroup_size[1],
+	                                           info.host_workgroup_size[2]};
+	const auto host_workgroup_invocations  = info.host_workgroup_invocations;
 	info = {};
 	info.dispatch_thread_dimensions = dispatch_thread_dimensions;
 	info.needs_lds_barriers          = needs_lds_barriers;
+	for (uint32_t i = 0; i < 3; i++) {
+		info.host_workgroup_size[i] = host_workgroup_size[i];
+	}
+	info.host_workgroup_invocations = host_workgroup_invocations;
 	info.threads_num[0]      = regs.cs_regs.num_thread_x;
 	info.threads_num[1]      = regs.cs_regs.num_thread_y;
 	info.threads_num[2]      = regs.cs_regs.num_thread_z;
@@ -971,7 +979,9 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 	for (int i = 0; i < 3; i++) {
 		key.push_back(info.threads_num[i]);
 		key.push_back(static_cast<uint32_t>(info.group_id[i]));
+		key.push_back(info.host_workgroup_size[i]);
 	}
+	key.push_back(info.host_workgroup_invocations);
 	key.push_back(static_cast<uint32_t>(info.tg_size_en));
 }
 

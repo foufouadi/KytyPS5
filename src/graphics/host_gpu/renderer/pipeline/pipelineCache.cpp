@@ -162,6 +162,11 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
                                                const HW::ShaderRegisters&   sh,
                                                ShaderComputeInputInfo&      input_info) {
 	input_info.needs_lds_barriers = !m_graphics.compute_wave64_supported;
+	const auto& limits = m_graphics.GetPhysicalDeviceProperties().limits;
+	for (uint32_t i = 0; i < 3; i++) {
+		input_info.host_workgroup_size[i] = limits.maxComputeWorkGroupSize[i];
+	}
+	input_info.host_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
 	const auto params             = PrepareProgram(regs, sh, input_info);
 	Common::LockGuard lock(m_mutex);
 	return m_program_cache->Get(params, input_info);

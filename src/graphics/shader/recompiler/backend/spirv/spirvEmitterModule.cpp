@@ -730,6 +730,45 @@ void DefineModule(EmitterState& state) {
 		local_x             = cs->threads_num[0] != 0u ? cs->threads_num[0] : local_x;
 		local_y             = cs->threads_num[1] != 0u ? cs->threads_num[1] : local_y;
 		local_z             = cs->threads_num[2] != 0u ? cs->threads_num[2] : local_z;
+		const uint64_t total = static_cast<uint64_t>(local_x) * local_y * local_z;
+		const bool fits = local_x <= cs->host_workgroup_size[0] &&
+		                  local_y <= cs->host_workgroup_size[1] &&
+		                  local_z <= cs->host_workgroup_size[2] &&
+		                  total <= cs->host_workgroup_invocations;
+		if (!fits) {
+			if (total == 0 || total > cs->host_workgroup_invocations) {
+				EXIT("compute workgroup %ux%ux%u (%" PRIu64
+				     " invocations) exceeds the host limit of %u invocations\n",
+				     local_x, local_y, local_z, total, cs->host_workgroup_invocations);
+			}
+			uint32_t host_x = 0;
+			uint32_t host_y = 0;
+			uint32_t host_z = 0;
+			for (uint32_t x = std::min<uint64_t>(total, cs->host_workgroup_size[0]); x >= 1; x--) {
+				if (total % x != 0) { continue; }
+				const uint64_t yz = total / x;
+				for (uint32_t y = std::min<uint64_t>(yz, cs->host_workgroup_size[1]); y >= 1; y--) {
+					if (yz % y == 0 && yz / y <= cs->host_workgroup_size[2]) {
+						host_x = x;
+						host_y = y;
+						host_z = static_cast<uint32_t>(yz / y);
+						break;
+					}
+				}
+				if (host_x != 0) { break; }
+			}
+			if (host_x == 0) {
+				EXIT("compute workgroup %ux%ux%u cannot fit host axis limits %ux%ux%u\n", local_x,
+				     local_y, local_z, cs->host_workgroup_size[0], cs->host_workgroup_size[1],
+				     cs->host_workgroup_size[2]);
+			}
+			state.remap_local_x = local_x;
+			state.remap_local_y = local_y;
+			state.remap_local_z = local_z;
+			local_x = host_x;
+			local_y = host_y;
+			local_z = host_z;
+		}
 		state.builder.AddExecutionMode(
 		    {state.main_func, ExecutionModeLocalSize, local_x, local_y, local_z});
 	}

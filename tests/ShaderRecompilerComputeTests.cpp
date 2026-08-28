@@ -20288,6 +20288,34 @@ TestCase MultipleWorkitemsGlobalId() {
   return test;
 }
 
+TestCase OversizedWorkgroupAxisRemapsInvocationIds() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code = {EncodeVop1(0x01, 1, 2)};
+  AppendBufferStoreDword(&code, 1, 3);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "OversizedWorkgroupAxisRemapsInvocationIds";
+  test.code = std::move(code);
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.compute_info.threads_num[0] = 2;
+  test.compute_info.threads_num[1] = 1;
+  test.compute_info.threads_num[2] = 128;
+  test.compute_info.host_workgroup_size[0] = 1024;
+  test.compute_info.host_workgroup_size[1] = 1024;
+  test.compute_info.host_workgroup_size[2] = 64;
+  test.compute_info.host_workgroup_invocations = 1024;
+  test.compute_info.dispatch_thread_dimensions = true;
+  test.compute_info.thread_ids_num = 3;
+  test.has_compute_info = true;
+  test.compile_only = true;
+  test.required_spirv = {"OpExecutionMode %", "LocalSize 256 1 1",
+                         "BuiltIn LocalInvocationIndex", "BuiltIn WorkgroupId",
+                         "OpShiftRightLogical"};
+  return test;
+}
+
 TestCase DispatcherIrreducibleControlFlow() {
   using O = ShaderOpcode;
 
@@ -20567,6 +20595,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(ImageAtomicVariants);
   AddCase(ImageAtomicGlc0DoesNotReturnOldValue);
   AddCase(MultipleWorkitemsGlobalId);
+  AddCase(OversizedWorkgroupAxisRemapsInvocationIds);
   AddCase(DispatcherIrreducibleControlFlow);
 
   return cases;
