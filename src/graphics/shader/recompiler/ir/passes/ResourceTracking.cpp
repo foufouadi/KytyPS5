@@ -202,15 +202,15 @@ private:
 		return true;
 	}
 
-	bool ValidateSource(const DescriptorSource& descriptor, std::string& reason,
-	                    uint32_t& bad_dword) const {
+	bool ValidateSource(const DescriptorSource& descriptor, std::string& reason, uint32_t& bad_dword,
+	                    bool* control_dependent = nullptr) const {
 		for (uint32_t i = 0; i < descriptor.dword_count; i++) {
 			bad_dword = i;
 			if (descriptor.dwords[i].Resolve().GetType() != Type::U32) {
 				reason = "is not U32";
 				return false;
 			}
-			if (!ValidateRuntimeValue(m_program, descriptor.dwords[i], reason)) {
+			if (!ValidateRuntimeValue(m_program, descriptor.dwords[i], reason, control_dependent)) {
 				return false;
 			}
 		}
@@ -482,11 +482,18 @@ private:
 			return false;
 		}
 		std::string reason;
-		uint32_t    bad_dword = 0;
-		if (!ValidateSource(descriptor, reason, bad_dword)) {
-			return Fail(
-			    pc, error,
-			    fmt::format("{} dword {} {}", ValueOpcodeName(expected), bad_dword, reason));
+		uint32_t    bad_dword         = 0;
+		bool        control_dependent = false;
+		if (!ValidateSource(descriptor, reason, bad_dword, &control_dependent)) {
+			const bool image_or_sampler = expected == ValueOpcode::GetImageResource ||
+			                              expected == ValueOpcode::GetSamplerResource;
+			if (!control_dependent || !image_or_sampler) {
+				return Fail(
+				    pc, error,
+				    fmt::format("{} dword {} {}", ValueOpcodeName(expected), bad_dword, reason));
+			}
+			std::fill_n(descriptor.dwords.begin(), descriptor.dword_count, Value(0u));
+			descriptor.indirect_image.reset();
 		}
 		source = InternSource(descriptor);
 		return true;
