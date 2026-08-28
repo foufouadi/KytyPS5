@@ -18,11 +18,23 @@ namespace {
 constexpr uint64_t AddressMask            = 0x0000ffffffffffffull;
 constexpr uint64_t MaxIndirectImageProbes = 65536u;
 
-Decoder::ImageDimension DescriptorDimension(const DescriptorValue&  descriptor,
-                                            Decoder::ImageDimension requested) {
+Decoder::ImageDimension GatherClampDimension(Decoder::ImageDimension dimension) {
+	switch (dimension) {
+		case Decoder::ImageDimension::Dim1DArray:
+		case Decoder::ImageDimension::Dim2DMsaaArray: return Decoder::ImageDimension::Dim2DArray;
+		case Decoder::ImageDimension::Dim1D:
+		case Decoder::ImageDimension::Dim3D:
+		case Decoder::ImageDimension::Dim2DMsaa: return Decoder::ImageDimension::Dim2D;
+		default: return dimension;
+	}
+}
+
+Decoder::ImageDimension DescriptorDimension(const DescriptorValue& descriptor,
+                                            Decoder::ImageDimension requested, bool gather = false) {
 	const bool is_array = requested == Decoder::ImageDimension::Dim1DArray ||
 	                      requested == Decoder::ImageDimension::Dim2DArray ||
 	                      requested == Decoder::ImageDimension::Dim2DMsaaArray;
+	const auto raw = [&]() -> Decoder::ImageDimension {
 	switch (static_cast<Prospero::ImageType>((descriptor.dwords[3] >> 28u) & 0xfu)) {
 		case Prospero::ImageType::kColor1D: return Decoder::ImageDimension::Dim1D;
 		case Prospero::ImageType::kColor1DArray:
@@ -46,6 +58,11 @@ Decoder::ImageDimension DescriptorDimension(const DescriptorValue&  descriptor,
 		case Prospero::ImageType::kColor2DMsaa: return Decoder::ImageDimension::Dim2DMsaa;
 		default: return Decoder::ImageDimension::Unknown;
 	}
+	}();
+	if (gather && raw != Decoder::ImageDimension::Unknown) {
+		return GatherClampDimension(raw);
+	}
+	return raw;
 }
 
 bool NullImageDescriptor(const DescriptorValue& descriptor) {
@@ -442,7 +459,7 @@ bool ValidateResourceSpecialization(const Program& program, const ResourceSnapsh
 			}
 			continue;
 		}
-		const auto dimension = DescriptorDimension(descriptor, image.dimension);
+		const auto dimension = DescriptorDimension(descriptor, image.dimension, image.gather);
 		if (dimension == Decoder::ImageDimension::Unknown || dimension != image.dimension ||
 		    DescriptorIsCube(descriptor) != image.cube) {
 			if (error != nullptr) {
@@ -753,7 +770,7 @@ bool SpecializeResources(Program& program, ResourceSnapshot& snapshot, std::stri
 			}
 			continue;
 		}
-		const auto descriptor_dimension = DescriptorDimension(descriptor, image.dimension);
+		const auto descriptor_dimension = DescriptorDimension(descriptor, image.dimension, image.gather);
 		if (descriptor_dimension == Decoder::ImageDimension::Unknown) {
 			if (error != nullptr) {
 				*error = fmt::format(
