@@ -730,6 +730,20 @@ void DefineModule(EmitterState& state) {
 		local_x             = cs->threads_num[0] != 0u ? cs->threads_num[0] : local_x;
 		local_y             = cs->threads_num[1] != 0u ? cs->threads_num[1] : local_y;
 		local_z             = cs->threads_num[2] != 0u ? cs->threads_num[2] : local_z;
+		constexpr uint32_t max_axis_x = 1024u;
+		constexpr uint32_t max_axis_y = 1024u;
+		constexpr uint32_t max_axis_z = 64u;
+		constexpr uint64_t max_total  = 1024u;
+		const uint64_t     total      = static_cast<uint64_t>(local_x) * local_y * local_z;
+		if (local_x > max_axis_x || local_y > max_axis_y || local_z > max_axis_z ||
+		    total > max_total) {
+			state.remap_local_x = local_x;
+			state.remap_local_y = local_y;
+			state.remap_local_z = local_z;
+			local_x = total <= max_axis_x ? static_cast<uint32_t>(total) : max_axis_x;
+			local_y = 1u;
+			local_z = 1u;
+		}
 		state.builder.AddExecutionMode(
 		    {state.main_func, ExecutionModeLocalSize, local_x, local_y, local_z});
 	}

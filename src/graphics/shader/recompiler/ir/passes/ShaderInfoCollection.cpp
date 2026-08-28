@@ -224,6 +224,8 @@ void CollectComputeInputs(const ShaderComputeInputInfo* compute, ShaderInfo& inf
 	}
 	if (compute->dispatch_thread_dimensions) {
 		AddInput(info, StageInputKind::GlobalInvocationId, 0, 3, "gl_GlobalInvocationID");
+		AddInput(info, StageInputKind::WorkgroupId, 0, 3, "gl_WorkGroupID");
+		AddInput(info, StageInputKind::LocalInvocationIndex, 0, 1, "gl_LocalInvocationIndex");
 	}
 }
 
