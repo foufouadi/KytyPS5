@@ -152,6 +152,7 @@ struct ImageResource {
 	bool                    depth_compare             = false;
 	bool                    cube                      = false;
 	bool                    r128                      = false;
+	bool                    gather                    = false;
 	uint32_t                indirect_root             = NoIndirectImage;
 	uint32_t                indirect_mapping_offset   = 0;
 	uint32_t                indirect_mapping_capacity = 0;
