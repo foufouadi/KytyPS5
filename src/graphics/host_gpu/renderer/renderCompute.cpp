@@ -354,6 +354,18 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		// while allowing the queue to execute asynchronously.
 		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	}
+	if (input_info.needs_lds_barriers && program.wave_size == 64u &&
+	    program.spirv_requirements.has_value() &&
+	    program.spirv_requirements->subgroup_shuffle) {
+		static std::atomic<uint32_t> skip_log {0};
+		if (skip_log.fetch_add(1, std::memory_order_relaxed) < 32) {
+			LOGF("GraphicsRenderDispatchDirect: skipping wave64 cross-lane compute shader "
+			     "0x%016" PRIx64 " (host has no wave64 subgroup)\n",
+			     program.shader_hash);
+		}
+		ResetBindings();
+		return;
+	}
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
 
