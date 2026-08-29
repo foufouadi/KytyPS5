@@ -1262,15 +1262,30 @@ static vk::ShaderModule CompileModule(vk::Device device, const ShaderParams& par
                                       ShaderStageRuntime& stage) {
 	const auto* stage_name = ShaderStageName(options.stage);
 	const auto* label      = ShaderStageLabel(options.stage);
+	const bool compute_skippable = options.stage == ShaderType::Compute;
+	const auto degrade           = [&](const std::string& why) -> vk::ShaderModule {
+        LOGF_COLOR(Log::Color::BrightYellow, "%s hash=0x%016" PRIx64 ": %s (dispatch skipped)\n",
+                   label, options.shader_hash, why.c_str());
+        stage.program   = std::make_shared<const ShaderRecompiler::IR::Program>();
+        stage.resources = std::make_shared<const ShaderRecompiler::IR::ResourceSnapshot>();
+        return nullptr;
+	};
+
 	ShaderRecompiler::CompileResult result;
 	std::string                     error;
 	if (!ShaderRecompiler::TryRecompile(params.code, options, result, &error)) {
+		if (compute_skippable) {
+			return degrade(error);
+		}
 		ExitShaderRecompilerFailure(label, options.shader_hash, error.c_str());
 	}
 
 	DumpShaderRecompilerOriginal(stage_name, options.shader_hash, params.code, result.decoded_dump);
 	if (!SpirvValidateBinary(label, options.shader_hash, result.spirv)) {
 		DumpShaderRecompilerSpirv(stage_name, options.shader_hash, result.spirv);
+		if (compute_skippable) {
+			return degrade("SPIR-V validation failed");
+		}
 		ExitShaderRecompilerFailure(label, options.shader_hash, "SPIR-V validation failed");
 	}
 	DumpShaderRecompilerSpirv(stage_name, options.shader_hash, result.spirv);

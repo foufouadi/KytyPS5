@@ -87,14 +87,20 @@ struct PipelineCache::ProgramCache {
 		BuildStageStaticKey(input_info, key_scratch);
 		auto& permutations = programs[{stage, params.hash}];
 		for (const auto& permutation: permutations) {
-			if (permutation.static_key == key_scratch &&
-			    MaterializeProgram(permutation.program, params, input_info)) {
+			if (permutation.static_key != key_scratch) {
+				continue;
+			}
+			if (permutation.handle.module == nullptr) {
+				input_info.stage.program = permutation.program;
+				return permutation.handle;
+			}
+			if (MaterializeProgram(permutation.program, params, input_info)) {
 				return permutation.handle;
 			}
 		}
 
 		const auto module = CompileProgram(device, params, input_info);
-		EXIT_IF(module == nullptr || !input_info.stage);
+		EXIT_IF(!input_info.stage);
 		uint64_t id = MixId(MixId(params.hash, static_cast<uint64_t>(stage)), permutations.size());
 		if (id == 0) {
 			id = 1;
