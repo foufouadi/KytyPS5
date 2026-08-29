@@ -13,7 +13,8 @@
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
 
-constexpr uint64_t AddressMask = 0x0000ffffffffffffull;
+constexpr uint64_t AddressMask       = 0x0000ffffffffffffull;
+constexpr uint64_t GuestNullPageSize = 0x10000ull;
 
 const char* StageName(ShaderType stage) {
 	switch (stage) {
@@ -575,7 +576,7 @@ private:
 			if (!m_runtime.read_memory(m_runtime.userdata, address, &word)) {
 				return Fail(error, fmt::format("constant read failed at 0x{:016x}", address));
 			}
-		} else {
+		} else if (address >= GuestNullPageSize) {
 			std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(word));
 		}
 		result = word;
