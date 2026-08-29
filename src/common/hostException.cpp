@@ -88,6 +88,31 @@ static LONG WINAPI ExceptionFilter(PEXCEPTION_POINTERS exception) noexcept {
 	if (handler != nullptr && handler(info)) {
 		return EXCEPTION_CONTINUE_EXECUTION;
 	}
+
+	{
+		static std::atomic_flag reported = ATOMIC_FLAG_INIT;
+		if (!reported.test_and_set(std::memory_order_relaxed)) {
+			std::fprintf(stderr,
+			             "\n=== UNHANDLED HOST FAULT ===\ncode=0x%08lx rip=0x%016llx access=%d "
+			             "vaddr=0x%016llx\nrax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx "
+			             "rsi=%016llx rdi=%016llx\nrbp=%016llx rsp=%016llx r8=%016llx r9=%016llx "
+			             "r10=%016llx r11=%016llx\nr12=%016llx r13=%016llx r14=%016llx r15=%016llx\n",
+			             static_cast<unsigned long>(exception_record->ExceptionCode),
+			             static_cast<unsigned long long>(info.exception_address),
+			             static_cast<int>(info.access_violation_type),
+			             static_cast<unsigned long long>(info.access_violation_vaddr), info.rax,
+			             info.rbx, info.rcx, info.rdx, info.rsi, info.rdi, info.rbp, info.rsp, info.r8,
+			             info.r9, info.r10, info.r11, info.r12, info.r13, info.r14, info.r15);
+			void*      frames[48];
+			const auto count = CaptureStackBackTrace(0, 48, frames, nullptr);
+			for (USHORT i = 0; i < count; i++) {
+				std::fprintf(stderr, "  [%02u] 0x%016llx\n", i,
+				             reinterpret_cast<unsigned long long>(frames[i]));
+			}
+			std::fprintf(stderr, "=== END HOST FAULT ===\n");
+			std::fflush(stderr);
+		}
+	}
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
