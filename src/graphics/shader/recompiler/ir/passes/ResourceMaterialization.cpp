@@ -777,7 +777,12 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 			if (image.indirect_root == ImageResource::NoIndirectImage) {
 				next.images[image_index]   = table.descriptors[table.candidates[0]];
 				image_written[image_index] = 1u;
-				if (table.descriptors.size() > 1u || table.sampler != UINT32_MAX) {
+				if (table.sampler != UINT32_MAX && !table.sampler_descriptors.empty() &&
+				    table.sampler < next.samplers.size()) {
+					next.samplers[table.sampler] =
+					    table.sampler_descriptors[table.candidates[0]];
+				}
+				if (table.descriptors.size() > 1u) {
 					table.resource = image_index;
 					next.indirect_images.push_back(std::move(table));
 				}
