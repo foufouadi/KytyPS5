@@ -276,6 +276,15 @@ uint32_t MakeSampledImage(EmitterState& state, const IR::MemoryInfo& mem, uint32
 	return MakeSampledImage(state, selected, use_pc, view);
 }
 
+uint32_t MakeSampledImage(EmitterState& state, const IR::MemoryInfo& mem, uint32_t use_pc,
+                          ImageViewKind view, uint32_t image_resource,
+                          uint32_t sampler_resource) {
+	auto selected     = mem;
+	selected.resource = image_resource;
+	selected.sampler  = sampler_resource;
+	return MakeSampledImage(state, selected, use_pc, view);
+}
+
 uint32_t StorageImageDescriptorPointer(EmitterState& state, uint32_t resource, ImageViewKind view) {
 	const auto image_class = StorageImageClassForResource(state, resource);
 	const auto kind        = StorageBindingKind(image_class, view);

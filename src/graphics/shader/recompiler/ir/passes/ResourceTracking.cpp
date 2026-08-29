@@ -135,14 +135,21 @@ public:
 			for (uint32_t dword = 5u; dword < plan.roots.size(); dword++) {
 				plan.handle->SetArg(dword, plan.key);
 			}
-			for (const auto index: plan.memory) {
-				m_program.memory_info[index].planning_only = true;
+			if (plan.sampler_handle != nullptr) {
+				plan.sampler_handle->SetArg(0, plan.key);
+				for (uint32_t dword = 1u; dword < 4u; dword++) {
+					plan.sampler_handle->SetArg(dword, plan.sampler_roots[dword]);
+				}
+			}
+			for (uint32_t read = 0; read < plan.read_count; read++) {
+				m_program.memory_info[plan.memory[read]].planning_only = true;
 			}
 		}
 		std::erase_if(m_program.dynamic_reads, [&](Value value) {
 			const auto* inst = value.Resolve().TryInstruction();
 			return std::ranges::any_of(m_indirect_images, [&](const IndirectImagePlan& plan) {
-				return std::ranges::find(plan.reads, inst) != plan.reads.end();
+				return std::find(plan.reads.begin(), plan.reads.begin() + plan.read_count, inst) !=
+				       plan.reads.begin() + plan.read_count;
 			});
 		});
 		m_program.descriptor_sources          = std::move(m_sources);
@@ -166,11 +173,15 @@ private:
 
 	struct IndirectImagePlan {
 		Inst*                      handle = nullptr;
+		Inst*                      sampler_handle = nullptr;
 		uint32_t                   source = 0;
+		uint32_t                   sampler_source = 0;
 		Value                      key;
 		std::array<Value, 8>       roots {};
-		std::array<uint32_t, 8>    memory {};
-		std::array<const Inst*, 8> reads {};
+		std::array<Value, 4>       sampler_roots {};
+		std::array<uint32_t, 12>   memory {};
+		std::array<const Inst*, 12> reads {};
+		uint32_t                   read_count = 0;
 	};
 
 	bool Fail(uint32_t pc, std::string* error, const std::string& reason) const {
@@ -202,15 +213,15 @@ private:
 		return true;
 	}
 
-	bool ValidateSource(const DescriptorSource& descriptor, std::string& reason,
-	                    uint32_t& bad_dword) const {
+	bool ValidateSource(const DescriptorSource& descriptor, std::string& reason, uint32_t& bad_dword,
+	                    bool* control_dependent = nullptr) const {
 		for (uint32_t i = 0; i < descriptor.dword_count; i++) {
 			bad_dword = i;
 			if (descriptor.dwords[i].Resolve().GetType() != Type::U32) {
 				reason = "is not U32";
 				return false;
 			}
-			if (!ValidateRuntimeValue(m_program, descriptor.dwords[i], reason)) {
+			if (!ValidateRuntimeValue(m_program, descriptor.dwords[i], reason, control_dependent)) {
 				return false;
 			}
 		}
@@ -221,7 +232,8 @@ private:
 		for (uint32_t candidate = 0; candidate < m_sources.size(); candidate++) {
 			const auto& current = m_sources[candidate];
 			if (current.dword_count != descriptor.dword_count ||
-			    current.indirect_image != descriptor.indirect_image) {
+			    current.indirect_image != descriptor.indirect_image ||
+			    current.indirect_sampler != descriptor.indirect_sampler) {
 				continue;
 			}
 			bool same = true;
@@ -299,8 +311,8 @@ private:
 		return true;
 	}
 
-	bool MatchMaterialOffset(Value value, Value& selector, uint32_t& stride,
-	                         uint32_t& offset) const {
+	bool MatchMaterialOffset(Value value, Value& selector, uint32_t& stride, uint32_t& offset,
+	                         bool require_first_lane = true) const {
 		value           = value.Resolve();
 		offset          = 0;
 		auto* candidate = value.TryInstruction();
@@ -329,8 +341,10 @@ private:
 			return false;
 		}
 		const auto* selector_inst = selector.TryInstruction();
-		return stride != 0u && selector_inst != nullptr &&
-		       selector_inst->GetOpcode() == ValueOpcode::ReadFirstLane;
+		return stride != 0u &&
+		       (!require_first_lane ||
+		        (selector_inst != nullptr &&
+		         selector_inst->GetOpcode() == ValueOpcode::ReadFirstLane));
 	}
 
 	bool TryMakeIndirectImage(Inst& handle, uint32_t pc, IndirectImagePlan& plan) {
@@ -433,6 +447,132 @@ private:
 		plan.source = InternSource(image_source);
 		plan.key    = Value(material_read);
 		plan.roots  = image_source.dwords;
+		plan.read_count = 8u;
+		return true;
+	}
+
+	bool MatchDirectTableReads(Inst& handle, uint32_t width, Inst*& table_handle, Value& offset,
+	                           uint32_t& descriptor_offset, IndirectImagePlan& plan) {
+		if (handle.NumArgs() < width) {
+			return false;
+		}
+		for (uint32_t dword = 0; dword < width; dword++) {
+			auto* read = handle.Arg(dword).Resolve().TryInstruction();
+			if (read == nullptr || plan.read_count >= plan.reads.size()) {
+				return false;
+			}
+			uint32_t memory_index = 0;
+			const auto* memory = ScalarReadMemory(*read, memory_index);
+			if (memory == nullptr) {
+				return false;
+			}
+			auto* current_handle = read->Arg(0).Resolve().TryInstruction();
+			if (current_handle == nullptr ||
+			    (table_handle != nullptr && current_handle != table_handle)) {
+				return false;
+			}
+			const auto current_offset = read->Arg(1).Resolve();
+			if (dword == 0u) {
+				table_handle      = current_handle;
+				offset            = current_offset;
+				descriptor_offset = memory->offset;
+			} else if (!EquivalentValue(m_program, offset, current_offset) ||
+			           memory->offset != descriptor_offset + dword * sizeof(uint32_t)) {
+				return false;
+			}
+			plan.memory[plan.read_count] = memory_index;
+			plan.reads[plan.read_count]  = read;
+			plan.read_count++;
+		}
+		return true;
+	}
+
+	bool TryMakeDirectTableImage(Inst& image_handle, Inst* sampler_handle, uint32_t pc,
+	                             IndirectImagePlan& plan) {
+		if (image_handle.GetOpcode() != ValueOpcode::GetImageResource ||
+		    (sampler_handle != nullptr &&
+		     sampler_handle->GetOpcode() != ValueOpcode::GetSamplerResource)) {
+			return false;
+		}
+		uint32_t image_dwords = 8u;
+		bool trailing_zero = true;
+		for (uint32_t dword = 4u; dword < 8u; dword++) {
+			const auto value = image_handle.Arg(dword).Resolve();
+			trailing_zero = trailing_zero && value.IsImmediate() && value.GetType() == Type::U32 &&
+			                value.U32() == 0u;
+		}
+		if (trailing_zero) {
+			image_dwords = 4u;
+		}
+		Inst*    table_handle = nullptr;
+		Value    table_offset;
+		uint32_t image_offset = 0;
+		if (!MatchDirectTableReads(image_handle, image_dwords, table_handle, table_offset, image_offset,
+		                           plan)) {
+			return false;
+		}
+		uint32_t sampler_offset = 0;
+		Inst* sampler_table_handle = nullptr;
+		if (sampler_handle != nullptr) {
+			Value sampler_table_offset;
+			if (!MatchDirectTableReads(*sampler_handle, 4u, sampler_table_handle, sampler_table_offset,
+			                           sampler_offset, plan) ||
+			    !EquivalentValue(m_program, table_offset, sampler_table_offset)) {
+				return false;
+			}
+		}
+		Value    selector;
+		uint32_t stride = 0;
+		uint32_t offset = 0;
+		if (!MatchMaterialOffset(table_offset, selector, stride, offset, false) || offset != 0u) {
+			return false;
+		}
+		DescriptorSource table_source;
+		DescriptorSource sampler_table_source;
+		uint32_t table_source_index = 0;
+		uint32_t sampler_table_source_index = 0;
+		if (!MakeRuntimeBufferSource(*table_handle, pc, table_source_index, table_source)) {
+			return false;
+		}
+		if (sampler_table_handle != nullptr) {
+			if (!MakeRuntimeBufferSource(*sampler_table_handle, pc, sampler_table_source_index,
+			                             sampler_table_source)) {
+				return false;
+			}
+		} else {
+			sampler_table_source_index = table_source_index;
+			sampler_table_source       = table_source;
+		}
+		DescriptorSource image_source;
+		image_source.dword_count = 8u;
+		image_source.dwords.fill(Value(0u));
+		std::copy(table_source.dwords.begin(), table_source.dwords.begin() + 4u,
+		          image_source.dwords.begin());
+		DescriptorSource::IndirectImage indirect;
+		indirect.material_source = table_source_index;
+		indirect.heap_source     = sampler_table_source_index;
+		indirect.selector_stride = stride;
+		indirect.image_offset    = image_offset;
+		indirect.sampler_offset  = sampler_offset;
+		indirect.image_dwords    = image_dwords;
+		indirect.layout = DescriptorSource::IndirectImage::Layout::DirectTable;
+		indirect.has_sampler = sampler_handle != nullptr;
+		image_source.indirect_image = indirect;
+
+		plan.handle         = &image_handle;
+		plan.sampler_handle = sampler_handle;
+		plan.source         = InternSource(image_source);
+		plan.key            = selector;
+		plan.roots          = image_source.dwords;
+		if (sampler_handle != nullptr) {
+			DescriptorSource sampler_source = sampler_table_source;
+			sampler_source.indirect_sampler =
+			    DescriptorSource::IndirectSampler {sampler_table_source_index, stride,
+			                                       sampler_offset};
+			plan.sampler_source = InternSource(sampler_source);
+			std::copy(sampler_table_source.dwords.begin(),
+			          sampler_table_source.dwords.begin() + 4u, plan.sampler_roots.begin());
+		}
 		return true;
 	}
 
@@ -446,7 +586,8 @@ private:
 
 	bool IsIndirectPlanningMemory(uint32_t index) const {
 		return std::ranges::any_of(m_indirect_images, [&](const IndirectImagePlan& plan) {
-			return std::ranges::find(plan.memory, index) != plan.memory.end();
+			return std::find(plan.memory.begin(), plan.memory.begin() + plan.read_count, index) !=
+			       plan.memory.begin() + plan.read_count;
 		});
 	}
 
@@ -462,7 +603,13 @@ private:
 					continue;
 				}
 				IndirectImagePlan plan;
-				if (TryMakeIndirectImage(*handle, inst.Flags<MemoryFlags>().pc, plan)) {
+				Inst* sampler_handle = nullptr;
+				if (ImageOpcodeInfoOf(inst.GetOpcode()).needs_sampler && inst.NumArgs() >= 2u) {
+					sampler_handle = inst.Arg(1).Resolve().TryInstruction();
+				}
+				if (TryMakeIndirectImage(*handle, inst.Flags<MemoryFlags>().pc, plan) ||
+				    TryMakeDirectTableImage(*handle, sampler_handle,
+				                            inst.Flags<MemoryFlags>().pc, plan)) {
 					m_indirect_images.push_back(std::move(plan));
 				}
 			}
@@ -482,11 +629,19 @@ private:
 			return false;
 		}
 		std::string reason;
-		uint32_t    bad_dword = 0;
-		if (!ValidateSource(descriptor, reason, bad_dword)) {
-			return Fail(
-			    pc, error,
-			    fmt::format("{} dword {} {}", ValueOpcodeName(expected), bad_dword, reason));
+		uint32_t    bad_dword         = 0;
+		bool        control_dependent = false;
+		if (!ValidateSource(descriptor, reason, bad_dword, &control_dependent)) {
+			const bool image_or_sampler = expected == ValueOpcode::GetImageResource ||
+			                              expected == ValueOpcode::GetSamplerResource;
+			if (!control_dependent || !image_or_sampler) {
+				return Fail(
+				    pc, error,
+				    fmt::format("{} dword {} {}", ValueOpcodeName(expected), bad_dword, reason));
+			}
+			std::fill_n(descriptor.dwords.begin(), descriptor.dword_count, Value(0u));
+			descriptor.indirect_image.reset();
+			descriptor.indirect_sampler.reset();
 		}
 		source = InternSource(descriptor);
 		return true;
@@ -727,8 +882,12 @@ private:
 			uint32_t sampler_source = 0;
 			const bool sample_adjust =
 			    (memory.image_sample_flags & Decoder::ImageSampleFlagAdjust) != 0;
-			if (!GetHandle(inst.Arg(1), ValueOpcode::GetSamplerResource, 4, flags.pc,
-			               sampler_handle, sampler_source, error, true, sample_adjust)) {
+			if (indirect != nullptr && indirect->sampler_handle != nullptr &&
+			    inst.Arg(1).Resolve().TryInstruction() == indirect->sampler_handle) {
+				sampler_handle = indirect->sampler_handle;
+				sampler_source = indirect->sampler_source;
+			} else if (!GetHandle(inst.Arg(1), ValueOpcode::GetSamplerResource, 4, flags.pc,
+			                      sampler_handle, sampler_source, error, true, sample_adjust)) {
 				return false;
 			}
 			sampler = AddSampler(sampler_source, flags.pc);

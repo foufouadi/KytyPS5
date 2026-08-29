@@ -441,6 +441,99 @@ void TestInvariantIndirectImageMaterialization() {
         "wrapped scalar immediate entered the invariant image proof");
 }
 
+void TestDirectIndirectImageSamplerTable() {
+  Fixture fixture;
+  const auto table = fixture.Buffer(
+      {fixture.UserData(0), fixture.UserData(1), fixture.UserData(2),
+       fixture.UserData(3)},
+      0x200);
+  const auto selector = fixture.UserData(4);
+  const auto record =
+      fixture.Emit(ValueOpcode::IMul32, {selector, Value(64u)});
+  std::array<Value, 4> sampler_words;
+  std::array<Value, 8> image_words;
+  for (uint32_t dword = 0; dword < sampler_words.size(); dword++) {
+    MemoryInfo memory;
+    memory.kind = ResourceKind::ScalarBuffer;
+    memory.offset = dword * sizeof(uint32_t);
+    sampler_words[dword] = fixture.Emit(
+        ValueOpcode::ReadConstBuffer, {table, record},
+        fixture.AddMemory(memory, 0x210 + dword * sizeof(uint32_t)));
+  }
+  for (uint32_t dword = 0; dword < image_words.size(); dword++) {
+    MemoryInfo memory;
+    memory.kind = ResourceKind::ScalarBuffer;
+    memory.offset = 16u + dword * sizeof(uint32_t);
+    image_words[dword] = fixture.Emit(
+        ValueOpcode::ReadConstBuffer, {table, record},
+        fixture.AddMemory(memory, 0x220 + dword * sizeof(uint32_t)));
+  }
+  const auto image = fixture.Image(image_words, 0x250);
+  const auto sampler = fixture.Sampler(sampler_words, 0x250);
+  MemoryInfo sample;
+  sample.kind = ResourceKind::Image;
+  sample.image_dimension = Decoder::ImageDimension::Dim2D;
+  const auto sampled = fixture.Emit(
+      ValueOpcode::ImageSampleRaw, {image, sampler, fixture.ImageAddress()},
+      fixture.AddMemory(sample, 0x250));
+  fixture.Emit(ValueOpcode::ReferenceU32,
+               {fixture.Emit(ValueOpcode::CompositeExtractU32x4,
+                             {sampled, Value(0u)})});
+
+  fixture.PlanAndTrack();
+  Check(fixture.program.info.images.size() == 1u &&
+            fixture.program.info.samplers.size() == 1u,
+        "direct descriptor table did not produce one image/sampler root");
+  const auto &image_source = fixture.program.descriptor_sources
+      [fixture.program.info.images[0].source];
+  Check(image_source.indirect_image.has_value() &&
+            image_source.indirect_image->layout ==
+                DescriptorSource::IndirectImage::Layout::DirectTable &&
+            image_source.indirect_image->image_offset == 16u &&
+            image_source.indirect_image->sampler_offset == 0u,
+        "direct descriptor table layout was not retained");
+
+  std::array<uint32_t, 5> user_data{0x1000u, 64u << 16u, 2u, 0u, 1u};
+  LinearTestMemory memory;
+  const auto write_record = [&](uint32_t record_index, uint32_t image_address,
+                                uint32_t sampler_word) {
+    const auto word = (record_index * 64u) / sizeof(uint32_t);
+    memory.words[word] = sampler_word;
+    memory.words[word + 4u] = image_address;
+    memory.words[word + 5u] =
+        static_cast<uint32_t>(
+            Libs::Graphics::Prospero::BufferFormat::k32_32_32_32Float)
+        << 20u;
+    memory.words[word + 6u] = 3u | (3u << 14u);
+    memory.words[word + 7u] =
+        Libs::Graphics::DstSel(4, 5, 6, 7) |
+        (static_cast<uint32_t>(
+             Libs::Graphics::Prospero::ImageType::kColor2D)
+         << 28u);
+  };
+  write_record(0u, 0x3000u, 0x11u);
+  write_record(1u, 0x4000u, 0x22u);
+  SrtRuntime runtime{.user_data = user_data,
+                     .read_memory = ReadLinearTestMemory,
+                     .userdata = &memory,
+                     .read_specialization_memory = ReadLinearTestMemory};
+  ResourceSnapshot snapshot;
+  std::string error;
+  Check(MaterializeResources(fixture.program, runtime, snapshot, &error),
+        error.c_str());
+  Check(snapshot.indirect_images.size() == 1u &&
+            snapshot.indirect_images[0].descriptors.size() == 2u &&
+            snapshot.indirect_images[0].sampler_descriptors.size() == 2u,
+        "direct descriptor candidates were not materialized as pairs");
+  Check(SpecializeResources(fixture.program, snapshot, &error), error.c_str());
+  Check(fixture.program.info.images[0].indirect_resources.size() == 2u &&
+            fixture.program.info.images[0].indirect_samplers.size() == 2u &&
+            snapshot.samplers.size() == 2u &&
+            snapshot.samplers[0].dwords[0] == 0x11u &&
+            snapshot.samplers[1].dwords[0] == 0x22u,
+        "direct descriptor specialization lost sampler pairing");
+}
+
 void TestDenseBufferTracking() {
   Fixture fixture;
   std::array<Value, 8> userdata;
@@ -1375,6 +1468,8 @@ int main() {
     Run("SampleAdjust sampler scratch", TestSampleAdjustSamplerScratch);
     Run("dynamic storage mips", TestDynamicStorageMipTracking);
     Run("invariant indirect images", TestInvariantIndirectImageMaterialization);
+    Run("direct indirect image/sampler table",
+        TestDirectIndirectImageSamplerTable);
     Run("SRT runtime", TestSrtFlatteningAndRuntimeMemoization);
     Run("dynamic SRT", TestDynamicSrtReadRemainsExplicit);
     Run("phi validation", TestPhiValidation);

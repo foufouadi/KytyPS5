@@ -668,6 +668,9 @@ uint32_t MakeSampledImage(EmitterState& state, const IR::MemoryInfo& mem, uint32
                           ImageViewKind view);
 uint32_t MakeSampledImage(EmitterState& state, const IR::MemoryInfo& mem, uint32_t use_pc,
                           ImageViewKind view, uint32_t image_resource);
+uint32_t MakeSampledImage(EmitterState& state, const IR::MemoryInfo& mem, uint32_t use_pc,
+                          ImageViewKind view, uint32_t image_resource,
+                          uint32_t sampler_resource);
 
 ImageViewKind StorageImageViewKind(const IR::MemoryInfo& mem);
 

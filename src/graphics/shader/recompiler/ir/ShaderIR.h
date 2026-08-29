@@ -156,6 +156,7 @@ struct ImageResource {
 	uint32_t                indirect_mapping_offset   = 0;
 	uint32_t                indirect_mapping_capacity = 0;
 	std::vector<uint32_t>   indirect_resources;
+	std::vector<uint32_t>   indirect_samplers;
 
 	bool operator==(const ImageResource& other) const = default;
 };
@@ -418,9 +419,9 @@ struct BindingLayout {
 
 struct ShaderInfo {
 	static constexpr uint32_t MaxBuffers      = 32;
-	static constexpr uint32_t MaxImages       = 32;
-	static constexpr uint32_t MaxSamplers     = 32;
-	static constexpr uint32_t MaxSampledPairs = 64;
+	static constexpr uint32_t MaxImages       = 64;
+	static constexpr uint32_t MaxSamplers     = 64;
+	static constexpr uint32_t MaxSampledPairs = 128;
 
 	std::vector<BufferResource>      buffers;
 	std::vector<ImageResource>       images;
@@ -458,18 +459,34 @@ struct BlockInfo {
 
 struct DescriptorSource {
 	struct IndirectImage {
+		enum class Layout : uint8_t { MaterialHeap, DirectTable };
+
 		uint32_t material_source = 0;
 		uint32_t heap_source     = 0;
 		uint32_t selector_stride = 0;
 		uint32_t selector_offset = 0;
 		uint32_t key_arg         = 0;
+		uint32_t image_offset    = 0;
+		uint32_t sampler_offset  = 0;
+		uint32_t image_dwords    = 8;
+		Layout   layout          = Layout::MaterialHeap;
+		bool     has_sampler     = false;
 
 		bool operator==(const IndirectImage& other) const = default;
+	};
+
+	struct IndirectSampler {
+		uint32_t table_source   = 0;
+		uint32_t record_stride  = 0;
+		uint32_t sampler_offset = 0;
+
+		bool operator==(const IndirectSampler& other) const = default;
 	};
 
 	std::array<Value, 8>         dwords {};
 	uint32_t                     dword_count = 0;
 	std::optional<IndirectImage> indirect_image;
+	std::optional<IndirectSampler> indirect_sampler;
 
 	bool operator==(const DescriptorSource& other) const = default;
 };

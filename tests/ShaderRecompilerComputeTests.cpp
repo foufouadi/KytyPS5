@@ -19513,12 +19513,16 @@ void CheckIndirectImageKeySwitch() {
   root.indirect_mapping_offset = 0;
   root.indirect_mapping_capacity = mapping_capacity;
   root.indirect_resources = {0u, 1u};
+  root.indirect_samplers = {0u, 1u};
   auto candidate = root;
   candidate.indirect_mapping_capacity = 0;
   candidate.indirect_resources.clear();
+  candidate.indirect_samplers.clear();
   program.info.images = {root, candidate};
   program.info.samplers.push_back({1u, 0x10f0u});
+  program.info.samplers.push_back({1u, 0x10f0u});
   program.info.sampled_pairs.push_back({0u, 0u, 0x10f0u});
+  program.info.sampled_pairs.push_back({1u, 1u, 0x10f0u});
 
   std::string error;
   Require(name, "binding layout", AllocateBindings(program, 0, &error),
@@ -19544,6 +19548,8 @@ void CheckIndirectImageKeySwitch() {
   DescriptorValue sampler_descriptor{};
   sampler_descriptor.dword_count = 4;
   snapshot.samplers.push_back(sampler_descriptor);
+  snapshot.samplers.push_back(sampler_descriptor);
+  snapshot.samplers[1].dwords[0] = 0x4u;
 
   ShaderComputeInputInfo compute{};
   std::vector<u32> spirv;
@@ -19563,8 +19569,9 @@ void CheckIndirectImageKeySwitch() {
           text.find("OpSwitch") != std::string::npos &&
               text.find("OpPhi") != std::string::npos &&
               CountText(text, "OpImageSampleExplicitLod") == 2 &&
+              CountText(text, "OpSampledImage") == 2 &&
               CountText(text, "OpIEqual") == 11,
-          "dynamic image key did not use a compact two-sample switch");
+          "dynamic image/sampler key did not use a compact paired switch");
 }
 
 TestCase ImageStoreMipSelectsPpsa01340Descriptor() {

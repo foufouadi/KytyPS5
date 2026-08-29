@@ -8,10 +8,12 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 struct ResourceSnapshot {
 	struct IndirectImage {
 		uint32_t                     resource = 0;
+		uint32_t                     sampler = UINT32_MAX;
 		uint32_t                     capacity = 0;
 		std::vector<uint32_t>        keys;
 		std::vector<uint32_t>        candidates;
 		std::vector<DescriptorValue> descriptors;
+		std::vector<DescriptorValue> sampler_descriptors;
 	};
 
 	std::vector<DescriptorValue> buffers;

@@ -120,7 +120,13 @@ class RuntimeValidator {
 public:
 	explicit RuntimeValidator(const Program& program): m_program(program) {}
 
-	bool Run(Value value, std::string& reason) { return Validate(value, reason); }
+	bool Run(Value value, std::string& reason, bool* control_dependent) {
+		const bool ok = Validate(value, reason);
+		if (!ok && control_dependent != nullptr) {
+			*control_dependent = m_control_dependent;
+		}
+		return ok;
+	}
 
 private:
 	bool Validate(Value value, std::string& reason) {
@@ -177,7 +183,8 @@ private:
 		if (op == ValueOpcode::Phi) {
 			const auto invariant = ResolveInvariantPhi(m_program, value);
 			if (invariant.IsEmpty()) {
-				reason = "contains a control-dependent phi";
+				m_control_dependent = true;
+				reason              = "contains a control-dependent phi";
 				return finish(false);
 			}
 			return finish(Validate(invariant, reason));
@@ -252,6 +259,7 @@ private:
 
 	const Program&                  m_program;
 	std::unordered_set<const Inst*> m_visiting;
+	bool                            m_control_dependent = false;
 };
 
 class PlanBuilder {
@@ -934,8 +942,9 @@ bool EvaluateRuntimeSourcesImpl(const Program&                           program
 
 } // namespace
 
-bool ValidateRuntimeValue(const Program& program, Value value, std::string& reason) {
-	return RuntimeValidator(program).Run(value, reason);
+bool ValidateRuntimeValue(const Program& program, Value value, std::string& reason,
+                          bool* control_dependent) {
+	return RuntimeValidator(program).Run(value, reason, control_dependent);
 }
 
 bool BuildSrtPlan(Program& program, std::string* error) {

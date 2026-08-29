@@ -267,6 +267,113 @@ bool MaterializeIndirectImage(const DescriptorSource::IndirectImage& indirect,
 	return true;
 }
 
+bool MaterializeDirectImageTable(const DescriptorSource::IndirectImage& indirect,
+                                 const DescriptorValue& image_table_value,
+                                 const DescriptorValue& sampler_table_value,
+                                 const SrtRuntime& runtime,
+                                 ResourceSnapshot::IndirectImage& result, std::string* error,
+                                 uint32_t use_pc) {
+	ShaderBufferResource image_table;
+	ShaderBufferResource sampler_table;
+	if (!DecodeBufferDescriptor(image_table_value, image_table) ||
+	    (indirect.has_sampler && !DecodeBufferDescriptor(sampler_table_value, sampler_table)) ||
+	    indirect.selector_stride == 0u ||
+	    (indirect.image_dwords != 4u && indirect.image_dwords != 8u)) {
+		if (error != nullptr) {
+			*error = fmt::format("indirect descriptor table at pc 0x{:08x} is invalid", use_pc);
+		}
+		return false;
+	}
+	const auto image_end = static_cast<uint64_t>(indirect.image_offset) +
+	                       indirect.image_dwords * sizeof(uint32_t);
+	const auto sampler_end = indirect.has_sampler
+	                             ? static_cast<uint64_t>(indirect.sampler_offset) +
+	                                   4u * sizeof(uint32_t)
+	                             : 0u;
+	const auto image_size = ScalarBufferSize(image_table);
+	auto count = image_size >= image_end
+	                 ? (image_size - image_end) / indirect.selector_stride + 1u
+	                 : 0u;
+	if (indirect.has_sampler) {
+		const auto sampler_size = ScalarBufferSize(sampler_table);
+		const auto sampler_count = sampler_size >= sampler_end
+		                               ? (sampler_size - sampler_end) /
+		                                         indirect.selector_stride +
+		                                     1u
+		                               : 0u;
+		count = std::min(count, sampler_count);
+	}
+	if (count > MaxIndirectImageProbes) {
+		if (error != nullptr) {
+			*error = fmt::format(
+			    "indirect descriptor table at pc 0x{:08x} requires {} bounded probes", use_pc, count);
+		}
+		return false;
+	}
+	if (count == 0u) {
+		ResourceSnapshot::IndirectImage empty;
+		empty.capacity = 1u;
+		empty.keys.push_back(0u);
+		empty.candidates.push_back(0u);
+		empty.descriptors.emplace_back().dword_count = 8u;
+		if (indirect.has_sampler) {
+			empty.sampler_descriptors.emplace_back().dword_count = 4u;
+		}
+		result = std::move(empty);
+		return true;
+	}
+
+	ResourceSnapshot::IndirectImage next;
+	next.capacity = static_cast<uint32_t>(count);
+	next.keys.reserve(static_cast<size_t>(count));
+	next.candidates.reserve(static_cast<size_t>(count));
+	for (uint64_t selector = 0; selector < count; selector++) {
+		DescriptorValue image;
+		image.dword_count = 8u;
+		const auto base = static_cast<uint32_t>(selector * indirect.selector_stride);
+		for (uint32_t dword = 0; dword < indirect.image_dwords; dword++) {
+			if (!ReadScalarBufferWord(image_table, base,
+			                          indirect.image_offset + dword * sizeof(uint32_t),
+			                          runtime, image.dwords[dword], error, use_pc)) {
+				return false;
+			}
+		}
+		if (NullImageDescriptor(image) || !ValidImageDescriptor(image)) {
+			image.dwords.fill(0u);
+		}
+		DescriptorValue sampler;
+		if (indirect.has_sampler) {
+			sampler.dword_count = 4u;
+			for (uint32_t dword = 0; dword < sampler.dword_count; dword++) {
+				if (!ReadScalarBufferWord(sampler_table, base,
+				                          indirect.sampler_offset + dword * sizeof(uint32_t), runtime,
+				                          sampler.dwords[dword], error, use_pc)) {
+					return false;
+				}
+			}
+		}
+		uint32_t candidate = UINT32_MAX;
+		for (uint32_t current = 0; current < next.descriptors.size(); current++) {
+			if (next.descriptors[current] == image &&
+			    (!indirect.has_sampler || next.sampler_descriptors[current] == sampler)) {
+				candidate = current;
+				break;
+			}
+		}
+		if (candidate == UINT32_MAX) {
+			candidate = static_cast<uint32_t>(next.descriptors.size());
+			next.descriptors.push_back(image);
+			if (indirect.has_sampler) {
+				next.sampler_descriptors.push_back(sampler);
+			}
+		}
+		next.keys.push_back(static_cast<uint32_t>(selector));
+		next.candidates.push_back(candidate);
+	}
+	result = std::move(next);
+	return true;
+}
+
 size_t FlattenedRuntimeDwords(const Program& program) {
 	size_t size = program.srt_reads.size();
 	for (uint32_t resource = 0; resource < program.info.images.size(); resource++) {
@@ -357,6 +464,15 @@ bool ValidateResourceSnapshot(const Program& program, const ResourceSnapshot& sn
 				}
 				return false;
 			}
+		}
+		if (source->indirect_image->has_sampler &&
+		    (table.sampler >= snapshot.samplers.size() ||
+		     table.sampler_descriptors.size() != table.descriptors.size() ||
+		     snapshot.samplers[table.sampler] != table.sampler_descriptors[0])) {
+			if (error != nullptr) {
+				*error = "indirect sampler snapshot does not match the shader plan";
+			}
+			return false;
 		}
 		if (snapshot.images[table.resource] != table.descriptors[table.candidates[0]]) {
 			if (error != nullptr) {
@@ -551,7 +667,13 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 		}
 	}
 	for (const auto& sampler: program.info.samplers) {
-		requests.push_back({sampler.source, sampler.first_use_pc});
+		const auto* source = Source(program, sampler.source);
+		if (source != nullptr && source->indirect_sampler.has_value()) {
+			MarkCleanFlatSlots(program, Source(program, source->indirect_sampler->table_source),
+			                   clean_flat_slots);
+		} else {
+			requests.push_back({sampler.source, sampler.first_use_pc});
+		}
 	}
 	std::vector<DescriptorValue> values;
 	std::vector<uint32_t>        flattened_srt;
@@ -574,6 +696,8 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 	next.flattened_srt.resize(FlattenedRuntimeDwords(program));
 	next.images.resize(program.info.images.size());
 	std::vector<uint8_t> image_written(program.info.images.size());
+	std::vector<std::pair<std::vector<uint32_t>, std::vector<DescriptorValue>>>
+	    specialized_indirect_samplers;
 	for (uint32_t image_index = 0; image_index < program.info.images.size(); image_index++) {
 		const auto& image  = program.info.images[image_index];
 		const auto* source = Source(program, image.source);
@@ -595,14 +719,32 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 			const auto&                     material = tables[0];
 			const auto&                     heap     = tables[1];
 			ResourceSnapshot::IndirectImage table;
-			if (!MaterializeIndirectImage(*source->indirect_image, material, heap, runtime, table,
-			                              error, image.first_use_pc)) {
+			const bool materialized =
+			    source->indirect_image->layout ==
+			            DescriptorSource::IndirectImage::Layout::DirectTable
+		        ? MaterializeDirectImageTable(*source->indirect_image, material, heap, runtime,
+		                                      table, error, image.first_use_pc)
+			        : MaterializeIndirectImage(*source->indirect_image, material, heap, runtime, table,
+			                                   error, image.first_use_pc);
+			if (!materialized) {
 				return false;
+			}
+			if (source->indirect_image->has_sampler) {
+				const auto pair = std::ranges::find_if(program.info.sampled_pairs, [&](const auto& value) {
+					return value.image == image_index;
+				});
+				if (pair == program.info.sampled_pairs.end()) {
+					if (error != nullptr) {
+						*error = "indirect image table has no sampled resource pair";
+					}
+					return false;
+				}
+				table.sampler = pair->sampler;
 			}
 			if (image.indirect_root == ImageResource::NoIndirectImage) {
 				next.images[image_index]   = table.descriptors[table.candidates[0]];
 				image_written[image_index] = 1u;
-				if (table.descriptors.size() > 1u) {
+				if (table.descriptors.size() > 1u || table.sampler != UINT32_MAX) {
 					table.resource = image_index;
 					next.indirect_images.push_back(std::move(table));
 				}
@@ -630,6 +772,19 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 				    table.descriptors[candidate < table.descriptors.size() ? candidate : 0u];
 				image_written[resource] = 1u;
 			}
+			if (!image.indirect_samplers.empty()) {
+				if (table.sampler_descriptors.empty() ||
+				    image.indirect_samplers.size() != image.indirect_resources.size()) {
+					if (error != nullptr) {
+						*error = "indirect sampler specialization changed candidate topology";
+					}
+					return false;
+				}
+				auto descriptors = table.sampler_descriptors;
+				descriptors.resize(image.indirect_samplers.size(), descriptors[0]);
+				specialized_indirect_samplers.emplace_back(image.indirect_samplers,
+				                                              std::move(descriptors));
+			}
 			std::vector<uint32_t> order(table.keys.size());
 			std::iota(order.begin(), order.end(), 0u);
 			std::ranges::sort(order, {}, [&](uint32_t index) { return table.keys[index]; });
@@ -656,7 +811,35 @@ bool MaterializeResources(const Program& program, const SrtRuntime& runtime,
 		}
 		return false;
 	}
-	next.samplers.assign(cursor, cursor + program.info.samplers.size());
+	next.samplers.resize(program.info.samplers.size());
+	for (uint32_t sampler = 0; sampler < program.info.samplers.size(); sampler++) {
+		const auto* source = Source(program, program.info.samplers[sampler].source);
+		if (source == nullptr || !source->indirect_sampler.has_value()) {
+			next.samplers[sampler] = *cursor++;
+		}
+	}
+	for (const auto& table: next.indirect_images) {
+		if (table.sampler != UINT32_MAX) {
+			if (table.sampler >= next.samplers.size() || table.sampler_descriptors.empty()) {
+				if (error != nullptr) {
+					*error = "indirect sampler table has invalid candidate resources";
+				}
+				return false;
+			}
+			next.samplers[table.sampler] = table.sampler_descriptors[0];
+		}
+	}
+	for (const auto& [resources, descriptors]: specialized_indirect_samplers) {
+		for (uint32_t candidate = 0; candidate < resources.size(); candidate++) {
+			if (resources[candidate] >= next.samplers.size()) {
+				if (error != nullptr) {
+					*error = "indirect sampler specialization has an invalid resource";
+				}
+				return false;
+			}
+			next.samplers[resources[candidate]] = descriptors[candidate];
+		}
+	}
 	next.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
 	if (!ValidateResourceSnapshot(program, next, error)) {
 		return false;
@@ -681,15 +864,30 @@ bool SpecializeResources(Program& program, ResourceSnapshot& snapshot, std::stri
 	auto next          = program.info;
 	auto next_snapshot = snapshot;
 	for (const auto& table: snapshot.indirect_images) {
-		if (table.resource >= next.images.size() || table.descriptors.size() < 2u ||
+		if (table.resource >= next.images.size() || table.descriptors.empty() ||
 		    next.images.size() + table.descriptors.size() - 1u > ShaderInfo::MaxImages) {
 			if (error != nullptr) {
 				*error = "indirect image candidates exceed the dense image resource limit";
 			}
 			return false;
 		}
+		if (table.sampler != UINT32_MAX &&
+		    (table.sampler >= next.samplers.size() ||
+		     table.sampler_descriptors.size() != table.descriptors.size() ||
+		     next.samplers.size() + table.sampler_descriptors.size() - 1u >
+		         ShaderInfo::MaxSamplers)) {
+			if (error != nullptr) {
+				*error = "indirect sampler candidates exceed the dense sampler resource limit";
+			}
+			return false;
+		}
 		const auto            root_image = next.images[table.resource];
 		std::vector<uint32_t> resources(table.descriptors.size());
+		std::vector<uint32_t> samplers;
+		if (table.sampler != UINT32_MAX) {
+			samplers.resize(table.sampler_descriptors.size());
+			samplers[0] = table.sampler;
+		}
 		resources[0] = table.resource;
 		for (uint32_t candidate = 1; candidate < table.descriptors.size(); candidate++) {
 			resources[candidate] = static_cast<uint32_t>(next.images.size());
@@ -697,12 +895,23 @@ bool SpecializeResources(Program& program, ResourceSnapshot& snapshot, std::stri
 			image.indirect_root  = table.resource;
 			next.images.push_back(std::move(image));
 			next_snapshot.images.push_back(table.descriptors[candidate]);
+			if (table.sampler != UINT32_MAX) {
+				samplers[candidate] = static_cast<uint32_t>(next.samplers.size());
+				next.samplers.push_back(next.samplers[table.sampler]);
+				next_snapshot.samplers.push_back(table.sampler_descriptors[candidate]);
+				next.sampled_pairs.push_back(
+				    {resources[candidate], samplers[candidate], root_image.first_use_pc});
+			}
+		}
+		if (table.descriptors.size() == 1u) {
+			continue;
 		}
 		auto& root                     = next.images[table.resource];
 		root.indirect_root             = table.resource;
 		root.indirect_mapping_offset   = static_cast<uint32_t>(next_snapshot.flattened_srt.size());
 		root.indirect_mapping_capacity = table.capacity;
 		root.indirect_resources        = std::move(resources);
+		root.indirect_samplers         = std::move(samplers);
 		next_snapshot.flattened_srt.resize(next_snapshot.flattened_srt.size() + 1u +
 		                                   static_cast<size_t>(table.capacity) * 2u);
 		std::vector<uint32_t> order(table.keys.size());
@@ -909,6 +1118,20 @@ bool SpecializeResources(Program& program, ResourceSnapshot& snapshot, std::stri
 	for (auto& pair: next.sampled_pairs) {
 		if (next.images[pair.image].conversion_format != Prospero::BufferFormat::kInvalid) {
 			pair.sampler = point_sampler[pair.sampler];
+		}
+	}
+	for (uint32_t image_index = 0; image_index < next.images.size(); image_index++) {
+		auto& image = next.images[image_index];
+		if (image.indirect_root != image_index) {
+			continue;
+		}
+		if (image.conversion_format == Prospero::BufferFormat::kInvalid) {
+			continue;
+		}
+		for (auto& sampler: image.indirect_samplers) {
+			if (sampler < point_sampler.size()) {
+				sampler = point_sampler[sampler];
+			}
 		}
 	}
 	for (const auto* block: program.blocks) {

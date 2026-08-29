@@ -678,7 +678,16 @@ bool EmitValueImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			operands.push_back(AddressF32(ctx, mem, *address, layout.bias));
 		}
 		const auto EmitSample = [&](uint32_t resource) {
-			const auto            sampled = MakeSampledImage(state, mem, pc, view, resource);
+			const auto& root = state.program.info.images[mem.resource];
+			const auto candidate = std::ranges::find(root.indirect_resources, resource);
+			const auto candidate_index =
+			    candidate == root.indirect_resources.end()
+			        ? 0u
+			        : static_cast<uint32_t>(candidate - root.indirect_resources.begin());
+			const auto sampled = candidate_index < root.indirect_samplers.size()
+			                         ? MakeSampledImage(state, mem, pc, view, resource,
+			                                            root.indirect_samplers[candidate_index])
+			                         : MakeSampledImage(state, mem, pc, view, resource);
 			const auto            sample  = state.builder.AllocateId();
 			std::vector<uint32_t> words {opcode, result_type, sample, sampled, coord};
 			if (dref) {
