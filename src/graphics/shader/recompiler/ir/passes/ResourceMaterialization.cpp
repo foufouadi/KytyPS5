@@ -29,8 +29,18 @@ Decoder::ImageDimension GatherClampDimension(Decoder::ImageDimension dimension) 
 	}
 }
 
+Decoder::ImageDimension DepthCompareClampDimension(Decoder::ImageDimension dimension) {
+	switch (dimension) {
+		case Decoder::ImageDimension::Dim3D:
+		case Decoder::ImageDimension::Dim2DMsaa: return Decoder::ImageDimension::Dim2D;
+		case Decoder::ImageDimension::Dim2DMsaaArray: return Decoder::ImageDimension::Dim2DArray;
+		default: return dimension;
+	}
+}
+
 Decoder::ImageDimension DescriptorDimension(const DescriptorValue& descriptor,
-                                            Decoder::ImageDimension requested, bool gather = false) {
+                                            Decoder::ImageDimension requested, bool gather = false,
+                                            bool depth_compare = false) {
 	const bool is_array = requested == Decoder::ImageDimension::Dim1DArray ||
 	                      requested == Decoder::ImageDimension::Dim2DArray ||
 	                      requested == Decoder::ImageDimension::Dim2DMsaaArray;
@@ -59,8 +69,14 @@ Decoder::ImageDimension DescriptorDimension(const DescriptorValue& descriptor,
 		default: return Decoder::ImageDimension::Unknown;
 	}
 	}();
-	if (gather && raw != Decoder::ImageDimension::Unknown) {
+	if (raw == Decoder::ImageDimension::Unknown) {
+		return raw;
+	}
+	if (gather) {
 		return GatherClampDimension(raw);
+	}
+	if (depth_compare) {
+		return DepthCompareClampDimension(raw);
 	}
 	return raw;
 }
@@ -575,7 +591,7 @@ bool ValidateResourceSpecialization(const Program& program, const ResourceSnapsh
 			}
 			continue;
 		}
-		const auto dimension = DescriptorDimension(descriptor, image.dimension, image.gather);
+		const auto dimension = DescriptorDimension(descriptor, image.dimension, image.gather, image.depth_compare);
 		if (dimension == Decoder::ImageDimension::Unknown || dimension != image.dimension ||
 		    DescriptorIsCube(descriptor) != image.cube) {
 			if (error != nullptr) {
@@ -981,7 +997,7 @@ bool SpecializeResources(Program& program, ResourceSnapshot& snapshot, std::stri
 			}
 			continue;
 		}
-		const auto descriptor_dimension = DescriptorDimension(descriptor, image.dimension, image.gather);
+		const auto descriptor_dimension = DescriptorDimension(descriptor, image.dimension, image.gather, image.depth_compare);
 		if (descriptor_dimension == Decoder::ImageDimension::Unknown) {
 			if (error != nullptr) {
 				*error = fmt::format(

@@ -114,6 +114,15 @@ Decoder::ImageDimension GatherDimension(Decoder::ImageDimension dimension) {
 	}
 }
 
+Decoder::ImageDimension DepthCompareDimension(Decoder::ImageDimension dimension) {
+	switch (dimension) {
+		case Decoder::ImageDimension::Dim3D:
+		case Decoder::ImageDimension::Dim2DMsaa: return Decoder::ImageDimension::Dim2D;
+		case Decoder::ImageDimension::Dim2DMsaaArray: return Decoder::ImageDimension::Dim2DArray;
+		default: return dimension;
+	}
+}
+
 bool IsGatherOpcode(Decoder::Opcode opcode) {
 	return opcode >= Decoder::Opcode::IMAGE_GATHER4_LZ &&
 	       opcode <= Decoder::Opcode::IMAGE_GATHER4H;
@@ -132,9 +141,12 @@ IR::MemoryInfo MemoryInfoFromDecoded(const Decoder::Instruction& decoded) {
 	memory.data_format              = decoded.data_format;
 	memory.number_format            = decoded.number_format;
 	memory.image_sample_flags       = decoded.image_sample_flags;
-	memory.image_dimension          = IsGatherOpcode(decoded.opcode)
-	                                      ? GatherDimension(decoded.image_dimension)
-	                                      : decoded.image_dimension;
+	memory.image_dimension =
+	    IsGatherOpcode(decoded.opcode)
+	        ? GatherDimension(decoded.image_dimension)
+	        : ((decoded.image_sample_flags & Decoder::ImageSampleFlagCompare) != 0
+	               ? DepthCompareDimension(decoded.image_dimension)
+	               : decoded.image_dimension);
 	memory.image_address_components = decoded.image_address_components;
 	memory.image_nsa_dwords         = decoded.image_nsa_dwords;
 	for (uint32_t index = 0; index < Decoder::MaxImageNsaAddressComponents; index++) {
