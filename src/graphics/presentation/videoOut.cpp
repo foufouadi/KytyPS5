@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <list>
 #include <thread>
 #include <vector>
@@ -1518,17 +1519,20 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 
 	DriverState().GetFlipQueue().GetFlipStatus(*ctx, *status);
 
-	LOGF("\t count = %" PRIu64 "\n"
-	     "\t processTime = %" PRIu64 "\n"
-	     "\t processTimeCounter = %" PRIu64 "\n"
-	     "\t submitProcessTimeCounter = %" PRIu64 "\n"
-	     "\t flipArg = %" PRId64 "\n"
-	     "\t gcQueueNum = %d\n"
-	     "\t flipPendingNum = %d\n"
-	     "\t currentBuffer = %d\n",
-	     status->count, status->processTime, status->processTimeCounter,
-	     status->submitProcessTimeCounter, status->flipArg, status->gcQueueNum,
-	     status->flipPendingNum, status->currentBuffer);
+	static std::atomic<uint32_t> status_log {0};
+	if (status_log.fetch_add(1, std::memory_order_relaxed) < 64) {
+		LOGF("\t count = %" PRIu64 "\n"
+		     "\t processTime = %" PRIu64 "\n"
+		     "\t processTimeCounter = %" PRIu64 "\n"
+		     "\t submitProcessTimeCounter = %" PRIu64 "\n"
+		     "\t flipArg = %" PRId64 "\n"
+		     "\t gcQueueNum = %d\n"
+		     "\t flipPendingNum = %d\n"
+		     "\t currentBuffer = %d\n",
+		     status->count, status->processTime, status->processTimeCounter,
+		     status->submitProcessTimeCounter, status->flipArg, status->gcQueueNum,
+		     status->flipPendingNum, status->currentBuffer);
+	}
 
 	return OK;
 }
@@ -1544,7 +1548,10 @@ KYTY_SYSV_ABI int VideoOutIsFlipPending(int handle) {
 	VideoOutFlipStatus status {};
 	DriverState().GetFlipQueue().GetFlipStatus(*ctx, status);
 
-	LOGF("\t flipPendingNum = %d\n", status.flipPendingNum);
+	static std::atomic<uint32_t> pending_log {0};
+	if (pending_log.fetch_add(1, std::memory_order_relaxed) < 64) {
+		LOGF("\t flipPendingNum = %d\n", status.flipPendingNum);
+	}
 
 	return status.flipPendingNum;
 }
